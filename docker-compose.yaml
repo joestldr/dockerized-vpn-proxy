@@ -51,7 +51,7 @@ services:
       --auth-user-pass /openvpn/client.pass
       --auth-nocache
     environment:
-      PRE_CONNECT_CHECK_CMD: 'ping -W 3 -c 4 9.9.9.9'
+      PRE_CONNECT_CHECK_CMD: 'ping -W 3 -c 4 ${DNS_PRIMARY} && ping -W 3 -c 4 ${DNS_SECONDARY} && wget -qO - https://google.com &> /dev/null'
       PRE_CONNECT_CHECK_MAX_RETRIES: '3'
     healthcheck:
       test: '[ "cat $(${CHECK_IP_FILE})" != "$(curl -sf ${CHECK_IP_URL})" ]'
