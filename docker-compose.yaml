@@ -1,0 +1,99 @@
+version: '2.4'
+x-common-runtime:
+  &common-runtime
+  sysctls:
+    net.core.somaxconn: 65535
+    net.ipv4.tcp_syncookies: 1
+    net.ipv4.tcp_synack_retries: 3
+    net.ipv4.tcp_max_syn_backlog: 2048
+    net.bridge.bridge-nf-call-iptables: 1
+    net.bridge.bridge-nf-call-ip6tables: 1
+    net.ipv4.ip_forward: 1
+  restart: 'unless-stopped'
+  logging:
+    driver: 'json-file'
+    options:
+      max-file: '3'
+      max-size: '100m'
+  labels:
+    - 'compose.${PROJECT_NAME}=true'
+services:
+  autoheal:
+    <<: *common-runtime
+    # https://hub.docker.com/r/willfarrell/autoheal
+    image: 'willfarrell/autoheal:latest'
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: 'compose.${PROJECT_NAME}'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  get-local-public-ip:
+    <<: *common-runtime
+    image: 'joestldr/toolbox:latest'
+    entrypoint: >-
+      bash -c 'while true; do
+        curl -sf ${CHECK_IP_URL} > ${CHECK_IP_FILE};
+        sleep 30;
+      done'
+    dns:
+      - '${DNS_PRIMARY}'
+      - '${DNS_SECONDARY}'
+    volumes:
+      - '${LOCAL_TMP_DIR}:${CHECK_IP_PATH}:rw'
+  openvpn: &openvpn
+    <<: *common-runtime
+    # https://hub.docker.com/r/joestldr/openvpn-client
+    image: 'joestldr/openvpn-client:latest'
+    ports:
+      - '0.0.0.0:3128:3128'
+      - '0.0.0.0:1080:1080'
+    command: >-
+      --config /openvpn/client.ovpn
+      --auth-user-pass /openvpn/client.pass
+      --auth-nocache
+    healthcheck:
+      test: '[ "cat $(${CHECK_IP_FILE})" != "$(curl -sf ${CHECK_IP_URL})" ]'
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    dns:
+      - '${DNS_PRIMARY}'
+      - '${DNS_SECONDARY}'
+    cap_add:
+      - 'NET_ADMIN'
+    devices:
+      - '/dev/net/tun:/dev/net/tun'
+    volumes:
+      - '${CONFIG_DIR}/openvpn:/openvpn:ro'
+      - '${LOCAL_TMP_DIR}:${CHECK_IP_PATH}:ro'
+    depends_on:
+      - 'get-local-public-ip'
+  http-proxy: &openvpn-network
+    <<: *common-runtime
+    # https://hub.docker.com/r/joestldr/http-proxy
+    image: 'joestldr/http-proxy:latest'
+    # ports: << must be in service:openvpn because of network_mode
+    healthcheck:
+      # why? if openvpn restarts, network_mode breaks
+      test: 'ping -w 1 -c 1 ${DNS_PRIMARY} && ping -w 1 -c 1 ${DNS_SECONDARY}'
+      interval: 3s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    volumes:
+      - '${LOCAL_TMP_DIR}:${CHECK_IP_PATH}:ro'
+    network_mode: 'service:openvpn'
+    depends_on:
+      - 'openvpn'
+  socks-proxy:
+    <<: *openvpn-network
+    # https://hub.docker.com/r/joestldr/srelay
+    image: 'joestldr/srelay:latest'
+    # ports: << must be in service:openvpn because of network_mode
+    healthcheck:
+      # why? if openvpn restarts, network_mode breaks
+      test: 'ping -w 1 -c 1 ${DNS_PRIMARY} && ping -w 1 -c 1 ${DNS_SECONDARY}'
+      interval: 3s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
